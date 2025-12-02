@@ -16,10 +16,14 @@ ENV REGION=${REGION}
 ENV DEBIAN_FRONTEND=noninteractive
 
 # --- Step 1: Instalasi Paket Dasar dan Setup SSH ---
-# --- PERBAIKAN: Ganti 'tput' dengan 'ncurses-utils' ---
-RUN apt-get update && apt-get upgrade -y && apt-get install -y \
-    ssh wget unzip vim curl python3 bzip2 shc ncurses-utils \
-    && rm -rf /var/lib/apt/lists/*
+# --- PERBAIKAN: Pendekatan 'Force Clean' untuk mengatasi masalah buildx ---
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get update -o Acquire::ForceIPv4=true && \
+    apt-get upgrade -y -o Acquire::ForceIPv4=true && \
+    apt-get install -y -o Acquire::ForceIPv4=true \
+    ssh wget unzip vim curl python3 bzip2 shc ncurses-bin && \
+    rm -rf /var/lib/apt/lists/*
 
 # --- Step 2: Download dan Setup Ngrok ---
 RUN wget -q "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-${TARGETARCH}.zip" -O /ngrok-stable.zip \
