@@ -15,14 +15,11 @@ ENV NGROK_TOKEN=${NGROK_TOKEN}
 ENV REGION=${REGION}
 ENV DEBIAN_FRONTEND=noninteractive
 
-# --- Step 1: Instalasi Paket Dasar ---
-# --- PERBAIKAN: Bersihkan cache apt sebelum instalasi ---
-RUN apt-get clean && \
-    apt-get update --fix-missing && \
-    apt-get upgrade -y && \
-    apt-get install -y \
-    ssh wget unzip vim curl python3 bzip2 shc ncurses-utils && \
-    rm -rf /var/lib/apt/lists/*
+# --- Step 1: Instalasi Paket Dasar dan Setup SSH ---
+# Menginstal semua dependensi yang dibutuhkan untuk SSH dan menu RDP
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
+    ssh wget unzip vim curl python3 bzip2 shc tput \
+    && rm -rf /var/lib/apt/lists/*
 
 # --- Step 2: Download dan Setup Ngrok ---
 RUN wget -q "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-${TARGETARCH}.zip" -O /ngrok-stable.zip \
@@ -30,97 +27,155 @@ RUN wget -q "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-${TARGET
     && chmod +x ngrok \
     && rm ngrok-stable.zip
 
-# --- Step 3: Membuat Script Startup Utama (/startup.sh) ---
-# Script ini akan menjalankan SEMUANYA: SSH, Ngrok, DAN Instalasi RDP
+# --- Step 3: Membuat Script Startup Utama (/openssh.sh) ---
+# Script ini akan menjalankan SSH server dan ngrok di background
 RUN mkdir -p /run/sshd \
-    && cat <<'EOF' > /startup.sh
+    && cat <<'EOF' > /openssh.sh
 #!/bin/bash
-set -e  # Keluar jika ada perintah yang gagal
+set -e
 
-echo "================================================"
-echo "      CONTAINER STARTUP - AUTO INSTALL RDP"
-echo "================================================"
-echo ""
+echo "=== Container Startup Script ==="
+echo "Starting SSH server and Ngrok tunnel..."
 
-# Fungsi untuk mencetak info SSH
-print_ssh_info() {
-    echo "Fetching SSH tunnel info..."
-    for i in {1..5}; do
-        TUNNEL_INFO=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null)
-        if [ -n "$TUNNEL_INFO" ]; then
-            echo "$TUNNEL_INFO" | python3 -c "import sys, json; print('ssh info:\n', 'ssh', 'root@' + json.load(sys.stdin)['tunnels'][0]['public_url'][6:].replace(':', ' -p '), '\nROOT Password: craxid')"
-            break
-        else
-            echo "SSH tunnel not ready yet... (attempt $i/5)"
-            sleep 5
-        fi
-    done
-}
-
-# --- Bagian 1: Jalankan SSH dan Ngrok di Background ---
-echo "Starting SSH server and Ngrok tunnel for monitoring..."
 # Jalankan ngrok di background untuk port SSH (22)
 /ngrok tcp --authtoken "${NGROK_TOKEN}" --region "${REGION}" 22 &
 
-# Jalankan SSH server di background
-/usr/sbin/sshd -D &
+# Tunggu ngrok siap
+sleep 10
 
-# Tunggu beberapa detik agar ngrok dan SSH siap
-sleep 15
-
-# Cetak info SSH ke log, ini satu-satunya cara Anda tahu apakah container hidup
-print_ssh_info
-
-echo ""
-echo "================================================"
-echo "       STARTING AUTOMATIC RDP INSTALLATION"
-echo "================================================"
-echo ""
-echo "WARNING: This script will attempt to replace the OS with Windows."
-echo "This process is HIGHLY LIKELY TO FAIL in a containerized environment"
-echo "like Cloud Run due to permission restrictions."
-echo ""
-
-# --- Bagian 2: Jalankan Instalasi RDP ---
-# Ini adalah bagian yang akan gagal.
-# Kita berikan input otomatis seperti sebelumnya.
-# Menggunakan 'yes' atau 'printf' untuk mengotomatisasi input.
-# Pilihan: 1 (Windows 10 Atlas), Port: 11304, Password: kelvin123, lalu 'y'
-printf "1\n11304\nkelvin123\n\n\ny\n" | wget -q https://github.com/Bintang73/auto-install-rdp/raw/refs/heads/main/main -O setup -O - | bash
-
-echo ""
-echo "================================================"
-echo "          INSTALLATION PROCESS FINISHED"
-echo "================================================"
-echo ""
-echo "If the installation was successful (unlikely), the container should now"
-echo "be running Windows. You can try to connect via RDP."
-echo ""
-echo "If the installation failed (very likely), the container might have crashed"
-echo "or be in an undefined state. Check the logs for errors."
-echo ""
-
-# Jika script mencapai sini, berarti instalasi selesai (atau gagal dengan cara tidak fatal).
-# Kita perlu menjaga container tetap hidup.
-# Jika Windows berhasil diinstall, prosesnya akan mengambil alih.
-# Jika gagal, kita masuk ke loop tak terbatas agar container tidak mati.
-echo "Entering infinite loop to keep container alive..."
-while true; do
-    sleep 60
+# Cetak informasi koneksi SSH
+echo "Fetching SSH tunnel info..."
+for i in {1..5}; do
+  TUNNEL_INFO=$(curl -s http://localhost:4040/api/tunnels)
+  if [ -n "$TUNNEL_INFO" ]; then
+    echo "$TUNNEL_INFO" | python3 -c "import sys, json; print('ssh info:\n', 'ssh', 'root@' + json.load(sys.stdin)['tunnels'][0]['public_url'][6:].replace(':', ' -p '), '\nROOT Password: craxid')"
+    break
+  else
+    echo "SSH tunnel not ready yet, trying again in 5s... (attempt $i/5)"
+    sleep 5
+  fi
 done
+
+# Jalankan SSH server di foreground agar container tetap berjalan
+echo "Starting SSH server..."
+exec /usr/sbin/sshd -D
 EOF
 
-# --- Step 4: Konfigurasi Akhir ---
-# Memberikan permission pada script startup
-RUN chmod +x /startup.sh
+# --- Step 4: Membuat Script Menu RDP (/menu.sh) ---
+# Ini adalah script yang akan Anda jalankan setelah login via SSH
+RUN cat <<'EOF' > /menu.sh
+#!/bin/bash
+
+# Warna dengan tput
+RED=$(tput setaf 1)
+GREEN=$(tput setaf 2)
+CYAN=$(tput setaf 6)
+MAGENTA=$(tput setaf 5)
+YELLOW=$(tput setaf 3)
+WHITE=$(tput setaf 7)
+BOLD=$(tput bold)
+RESET=$(tput sgr0)
+
+# Fungsi untuk mendapatkan IP (akan menunjukkan IP internal container)
+get_ip() {
+    hostname -I | awk '{print $1}'
+}
+
+# Instalasi RDP
+install_rdp() {
+    echo ""
+    echo "${BOLD}${CYAN}💻 Instalasi RDP Dimulai...${RESET}"
+    echo "${YELLOW}PERINGATAN: Ini akan mengubah OS container menjadi Windows.${RESET}"
+    echo "${YELLOW}Proses ini memakan waktu dan VPS akan disconnect.${RESET}"
+    echo ""
+    read -p "Apakah Anda yakin? (y/n): " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "Mengunduh script installer..."
+        wget -q https://github.com/Bintang73/auto-install-rdp/raw/refs/heads/main/main -O setup
+        chmod +x setup
+        echo "Menjalankan installer..."
+        ./setup
+    else
+        echo "Instalasi dibatalkan."
+    fi
+    read -p "Tekan Enter untuk kembali ke menu..." dummy
+    main_menu
+}
+
+# Menu Utama
+main_menu() {
+    clear
+    echo "${CYAN}";
+    echo "██████╗ ██████╗ ██████╗       ██╗   ██╗██████╗ ███████╗";
+    echo "██╔══██╗██╔══██╗██╔══██╗      ██║   ██║██╔══██╗██╔════╝";
+    echo "██████╔╝██║  ██║██████╔╝█████╗██║   ██║██████╔╝███████╗";
+    echo "██╔══██╗██║  ██║██╔═══╝ ╚════╝╚██╗ ██╔╝██╔═══╝ ╚════██║";
+    echo "██║  ██║██████╔╝██║            ╚████╔╝ ██║     ███████║";
+    echo "╚═╝  ╚═╝╚═════╝ ╚═╝             ╚═══╝  ╚═╝     ╚══════╝";
+    echo "${RESET}";
+
+    echo "${GREEN}OS         : ${WHITE}Ubuntu Container${RESET}"
+    echo "${GREEN}SSH Access : ${WHITE}Aktif via Ngrok${RESET}"
+    echo "${GREEN}IP Internal: ${WHITE}$(get_ip)${RESET}"
+    echo "${GREEN}Powered By : ${WHITE}@starfz - PurwokertoDev${RESET}"
+    echo ""
+    echo "${MAGENTA}📋 Pilih Opsi:${RESET}"
+    echo "${CYAN}1.${RESET} ${WHITE}Auto Install RDP (Reinstall to Windows)${RESET}"
+    echo "${CYAN}2.${RESET} ${WHITE}Check System Info${RESET}"
+    echo "${CYAN}8.${RESET} ${RED}Exit Menu${RESET}"
+
+    echo ""
+    echo "${YELLOW}====================================================${RESET}"
+    echo ""
+
+    printf "${BOLD}${CYAN}Masukkan pilihan Anda (1, 2, 8): ${RESET}"
+    read pilihan
+
+    case "$pilihan" in
+        1) install_rdp ;;
+        2)
+            clear
+            echo "${YELLOW}📌 System Information${RESET}"
+            echo "OS Info:"
+            cat /etc/os-release
+            echo ""
+            echo "Memory Info:"
+            free -h
+            echo ""
+            echo "Disk Info:"
+            df -h
+            read -p "Tekan Enter untuk kembali ke menu..." dummy
+            main_menu
+            ;;
+        8)
+            echo ""
+            echo "${BOLD}${CYAN}👋 Kembali ke shell...${RESET}"
+            echo ""
+            # Keluar dari menu, kembali ke bash
+            ;;
+        *)
+            echo "${RED}Pilihan tidak valid. Silakan pilih antara 1, 2, atau 8.${RESET}"
+            sleep 1
+            main_menu
+            ;;
+    esac
+}
+
+# Jalankan menu
+main_menu
+EOF
+
+# --- Step 5: Konfigurasi Akhir ---
+# Memberikan permission pada script
+RUN chmod +x /openssh.sh /menu.sh
 
 # Mengatur password root dan konfigurasi SSH
 RUN echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config \
     && echo root:craxid | chpasswd
 
-# Mengekspos port
+# Mengekspos port (meskipun tidak langsung digunakan di Cloud Run)
 EXPOSE 22 3389
 
-# --- Step 5: Ganti CMD ke Script Startup ---
-# Sekarang, saat container dijalankan, ia akan menjalankan /startup.sh
-CMD ["/startup.sh"]
+# Command utama yang dijalankan saat container start
+CMD ["/openssh.sh"]
