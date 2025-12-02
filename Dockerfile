@@ -2,6 +2,7 @@
 FROM ubuntu:latest
 
 # --- ARG untuk Build Time ---
+# Untuk multi-arch build dan ngrok token
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 ARG TARGETARCH
@@ -9,13 +10,15 @@ ARG NGROK_TOKEN
 ARG REGION=ap
 
 # --- ENV untuk Runtime ---
-ENV DEBIAN_FRONTEND=noninteractive
+# Meneruskan ARG ke ENV agar bisa diakses oleh script
 ENV NGROK_TOKEN=${NGROK_TOKEN}
 ENV REGION=${REGION}
+ENV DEBIAN_FRONTEND=noninteractive
 
 # --- Step 1: Instalasi Paket Dasar ---
+# --- PERBAIKAN: Ganti 'tput' dengan 'ncurses-utils' ---
 RUN apt-get update && apt-get upgrade -y && apt-get install -y \
-    ssh wget unzip vim curl python3 bzip2 shc tput \
+    ssh wget unzip vim curl python3 bzip2 shc ncurses-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Step 2: Download dan Setup Ngrok ---
