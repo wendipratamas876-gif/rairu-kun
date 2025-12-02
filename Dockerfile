@@ -16,9 +16,9 @@ ENV REGION=${REGION}
 ENV DEBIAN_FRONTEND=noninteractive
 
 # --- Step 1: Instalasi Paket Dasar dan Setup SSH ---
-# Menginstal semua dependensi yang dibutuhkan untuk SSH dan menu RDP
+# --- PERBAIKAN: Ganti 'tput' dengan 'ncurses-utils' ---
 RUN apt-get update && apt-get upgrade -y && apt-get install -y \
-    ssh wget unzip vim curl python3 bzip2 shc tput \
+    ssh wget unzip vim curl python3 bzip2 shc ncurses-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Step 2: Download dan Setup Ngrok ---
