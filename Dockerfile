@@ -1,75 +1,120 @@
 # Menggunakan ubuntu:latest sebagai base image
 FROM ubuntu:latest
 
-# --- PERUBAHAN PENTING DI BAGIAN AWAL ---
-# ARG digunakan untuk menerima nilai saat build
+# --- ARG untuk Build Time ---
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 ARG TARGETARCH
 ARG NGROK_TOKEN
 ARG REGION=ap
 
-# --- PERUBAHAN PENTING: Teruskan ARG ke ENV ---
-# ENV akan membuat variabel ini tersedia di dalam container saat runtime
-# Nilainya diambil dari ARG yang didefinisikan di atas
+# --- ENV untuk Runtime ---
+ENV DEBIAN_FRONTEND=noninteractive
 ENV NGROK_TOKEN=${NGROK_TOKEN}
 ENV REGION=${REGION}
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Perintah instalasi paket
+# --- Step 1: Instalasi Paket Dasar ---
 RUN apt-get update && apt-get upgrade -y && apt-get install -y \
-    ssh wget unzip vim curl python3 \
+    ssh wget unzip vim curl python3 bzip2 shc tput \
     && rm -rf /var/lib/apt/lists/*
 
-# Mengunduh ngrok yang Sesuai dengan Arsitektur Target
+# --- Step 2: Download dan Setup Ngrok ---
 RUN wget -q "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-${TARGETARCH}.zip" -O /ngrok-stable.zip \
     && cd / && unzip ngrok-stable.zip \
     && chmod +x ngrok \
     && rm ngrok-stable.zip
 
-# --- PERUBAHAN: Membuat script dengan heredoc yang "polos" ---
-# Kita tidak perlu khawatir tentang escaping karena kita akan menggunakan
-# variabel lingkungan (ENV) yang sudah pasti ada.
+# --- Step 3: Membuat Script Startup Utama (/startup.sh) ---
+# Script ini akan menjalankan SEMUANYA: SSH, Ngrok, DAN Instalasi RDP
 RUN mkdir -p /run/sshd \
-    && cat <<'EOF' > /openssh.sh
+    && cat <<'EOF' > /startup.sh
 #!/bin/bash
-set -e  # Keluar dari script jika ada perintah yang gagal
+set -e  # Keluar jika ada perintah yang gagal
 
-# Tambahkan baris debug untuk memastikan variabel terbaca (opsional, bisa dihapus nanti)
-echo "DEBUG: Ngrok Token is: ${NGROK_TOKEN:0:10}..."
-echo "DEBUG: Ngrok Region is: ${REGION}"
+echo "================================================"
+echo "      CONTAINER STARTUP - AUTO INSTALL RDP"
+echo "================================================"
+echo ""
 
-# Jalankan ngrok di background
-# Karena NGROK_TOKEN dan REGION sudah adalah ENV, mereka bisa diakses langsung
+# Fungsi untuk mencetak info SSH
+print_ssh_info() {
+    echo "Fetching SSH tunnel info..."
+    for i in {1..5}; do
+        TUNNEL_INFO=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null)
+        if [ -n "$TUNNEL_INFO" ]; then
+            echo "$TUNNEL_INFO" | python3 -c "import sys, json; print('ssh info:\n', 'ssh', 'root@' + json.load(sys.stdin)['tunnels'][0]['public_url'][6:].replace(':', ' -p '), '\nROOT Password: craxid')"
+            break
+        else
+            echo "SSH tunnel not ready yet... (attempt $i/5)"
+            sleep 5
+        fi
+    done
+}
+
+# --- Bagian 1: Jalankan SSH dan Ngrok di Background ---
+echo "Starting SSH server and Ngrok tunnel for monitoring..."
+# Jalankan ngrok di background untuk port SSH (22)
 /ngrok tcp --authtoken "${NGROK_TOKEN}" --region "${REGION}" 22 &
 
-# Tunggu ngrok siap
-sleep 10 # Ditambah menjadi 10 detik untuk memberi lebih banyak waktu
+# Jalankan SSH server di background
+/usr/sbin/sshd -D &
 
-# Cetak informasi koneksi SSH
-echo "Mengambil info tunnel ngrok..."
-# Tambahkan loop untuk mencoba beberapa kali
-for i in {1..5}; do
-  TUNNEL_INFO=$(curl -s http://localhost:4040/api/tunnels)
-  if [ -n "$TUNNEL_INFO" ]; then
-    echo "$TUNNEL_INFO" | python3 -c "import sys, json; print('ssh info:\n', 'ssh', 'root@' + json.load(sys.stdin)['tunnels'][0]['public_url'][6:].replace(':', ' -p '), '\nROOT Password: craxid')"
-    break
-  else
-    echo "Tunnel belum siap, mencoba lagi dalam 5 detik... (percobaan $i/5)"
-    sleep 5
-  fi
+# Tunggu beberapa detik agar ngrok dan SSH siap
+sleep 15
+
+# Cetak info SSH ke log, ini satu-satunya cara Anda tahu apakah container hidup
+print_ssh_info
+
+echo ""
+echo "================================================"
+echo "       STARTING AUTOMATIC RDP INSTALLATION"
+echo "================================================"
+echo ""
+echo "WARNING: This script will attempt to replace the OS with Windows."
+echo "This process is HIGHLY LIKELY TO FAIL in a containerized environment"
+echo "like Cloud Run due to permission restrictions."
+echo ""
+
+# --- Bagian 2: Jalankan Instalasi RDP ---
+# Ini adalah bagian yang akan gagal.
+# Kita berikan input otomatis seperti sebelumnya.
+# Menggunakan 'yes' atau 'printf' untuk mengotomatisasi input.
+# Pilihan: 1 (Windows 10 Atlas), Port: 11304, Password: kelvin123, lalu 'y'
+printf "1\n11304\nkelvin123\n\n\ny\n" | wget -q https://github.com/Bintang73/auto-install-rdp/raw/refs/heads/main/main -O setup -O - | bash
+
+echo ""
+echo "================================================"
+echo "          INSTALLATION PROCESS FINISHED"
+echo "================================================"
+echo ""
+echo "If the installation was successful (unlikely), the container should now"
+echo "be running Windows. You can try to connect via RDP."
+echo ""
+echo "If the installation failed (very likely), the container might have crashed"
+echo "or be in an undefined state. Check the logs for errors."
+echo ""
+
+# Jika script mencapai sini, berarti instalasi selesai (atau gagal dengan cara tidak fatal).
+# Kita perlu menjaga container tetap hidup.
+# Jika Windows berhasil diinstall, prosesnya akan mengambil alih.
+# Jika gagal, kita masuk ke loop tak terbatas agar container tidak mati.
+echo "Entering infinite loop to keep container alive..."
+while true; do
+    sleep 60
 done
-
-# Jalankan SSH server di foreground
-echo "Memulai SSH server..."
-exec /usr/sbin/sshd -D
 EOF
 
-# Atur permission dan konfigurasi SSH
-RUN chmod 755 /openssh.sh \
-    && echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config \
+# --- Step 4: Konfigurasi Akhir ---
+# Memberikan permission pada script startup
+RUN chmod +x /startup.sh
+
+# Mengatur password root dan konfigurasi SSH
+RUN echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config \
     && echo root:craxid | chpasswd
 
-EXPOSE 80 443 3306 4040 5432 5700 5701 5010 6800 6900 8080 8888 9000
-CMD ["/openssh.sh"]
+# Mengekspos port
+EXPOSE 22 3389
+
+# --- Step 5: Ganti CMD ke Script Startup ---
+# Sekarang, saat container dijalankan, ia akan menjalankan /startup.sh
+CMD ["/startup.sh"]
