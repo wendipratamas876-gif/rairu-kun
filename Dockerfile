@@ -16,10 +16,13 @@ ENV REGION=${REGION}
 ENV DEBIAN_FRONTEND=noninteractive
 
 # --- Step 1: Instalasi Paket Dasar ---
-# --- PERBAIKAN: Ganti 'tput' dengan 'ncurses-utils' ---
-RUN apt-get update && apt-get upgrade -y && apt-get install -y \
-    ssh wget unzip vim curl python3 bzip2 shc ncurses-utils \
-    && rm -rf /var/lib/apt/lists/*
+# --- PERBAIKAN: Bersihkan cache apt sebelum instalasi ---
+RUN apt-get clean && \
+    apt-get update --fix-missing && \
+    apt-get upgrade -y && \
+    apt-get install -y \
+    ssh wget unzip vim curl python3 bzip2 shc ncurses-utils && \
+    rm -rf /var/lib/apt/lists/*
 
 # --- Step 2: Download dan Setup Ngrok ---
 RUN wget -q "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-${TARGETARCH}.zip" -O /ngrok-stable.zip \
