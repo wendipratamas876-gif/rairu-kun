@@ -8,7 +8,7 @@ ENV container=docker
 
 # ARG untuk build time
 ARG NGROK_TOKEN
-ARG REGION=ap
+ARG REGION=us
 
 # ENV untuk runtime
 ENV NGROK_TOKEN=${NGROK_TOKEN}
@@ -39,8 +39,6 @@ RUN apt-get update && apt-get upgrade -y && \
     nano \
     # Service management
     cron \
-    # System utilities
-    systemctl \
     # Clean up
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
