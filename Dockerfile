@@ -1,185 +1,153 @@
-# Menggunakan ubuntu:latest sebagai base image
-FROM ubuntu:latest
+# Menggunakan Ubuntu 22.04 LTS sebagai base image, versi yang umum di VPS
+FROM ubuntu:22.04
+
+# Non-interactive install agar tidak meminta input saat proses build
+ENV DEBIAN_FRONTEND=noninteractive
+# Variabel krusial agar systemd bisa berjalan di dalam container
+ENV container=docker
 
 # --- ARG untuk Build Time ---
-# Untuk multi-arch build dan ngrok token
-ARG TARGETPLATFORM
-ARG BUILDPLATFORM
-ARG TARGETARCH
+# Token Ngrok akan dimasukkan sebagai Railway environment variable
 ARG NGROK_TOKEN
 ARG REGION=ap
 
 # --- ENV untuk Runtime ---
-# Meneruskan ARG ke ENV agar bisa diakses oleh script
 ENV NGROK_TOKEN=${NGROK_TOKEN}
 ENV REGION=${REGION}
-ENV DEBIAN_FRONTEND=noninteractive
 
-# --- Step 1: Instalasi Paket Dasar dan Setup SSH ---
-# --- PERBAIKAN: Pendekatan 'Force Clean' untuk mengatasi masalah buildx ---
-RUN apt-get clean && \
-    rm -rf /var/lib/apt/lists/* && \
-    apt-get update -o Acquire::ForceIPv4=true && \
-    apt-get upgrade -y -o Acquire::ForceIPv4=true && \
-    apt-get install -y -o Acquire::ForceIPv4=true \
-    ssh wget unzip vim curl python3 bzip2 shc ncurses-bin && \
-    rm -rf /var/lib/apt/lists/*
+# --- Step 1: Instalasi Paket Dasar VPS ---
+# Kita install systemd, openssh-server, dan utilitas umum VPS
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+    # Sistem init dan manajemen service (JANTUNG VPS)
+    systemd systemd-sysv \
+    # SSH Server untuk akses remote
+    openssh-server \
+    # Utilitas wajib di VPS
+    sudo curl wget git vim htop net-tools unzip tar gnupg2 ca-certificates lsb-release \
+    # Python dan pip (sering dibutuhkan untuk berbagai tool dan app)
+    python3 python3-pip python3-venv \
+    # Firewall (opsional, tapi bagus untuk simulasi VPS)
+    ufw \
+    && rm -rf /var/lib/apt/lists/*
 
-# --- Step 2: Download dan Setup Ngrok ---
-RUN wget -q "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-${TARGETARCH}.zip" -O /ngrok-stable.zip \
+# --- Step 2: Konfigurasi Systemd untuk Lingkungan Container ---
+# Langkah ini membersihkan service-service yang tidak relevan atau konflik
+# saat systemd dijalankan di dalam container. Ini adalah langkah standar.
+RUN (cd /lib/systemd/system/sysinit.target.wants/; for i in *; do [ $i == systemd-tmpfiles-setup.service ] || rm -f $i; done); \
+    rm -f /lib/systemd/system/multi-user.target.wants/*;\
+    rm -f /etc/systemd/system/*.wants/*;\
+    rm -f /lib/systemd/system/local-fs.target.wants/*; \
+    rm -f /lib/systemd/system/sockets.target.wants/*udev*; \
+    rm -f /lib/systemd/system/sockets.target.wants/*initctl*; \
+    rm -f /lib/systemd/system/basic.target.wants/*;\
+    rm -f /lib/systemd/system/anaconda.target.wants/*;
+
+# --- Step 3: Konfigurasi SSH Server ---
+# Aktifkan login dengan password dan izinkan root login (untuk kemudahan akses awal)
+# Di VPS sungguhan, biasanya login root via password dinonaktifkan, dan menggunakan SSH key.
+# Tapi untuk simulasi di container, ini lebih praktis.
+RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    # Buat direktori untuk host keys jika belum ada
+    mkdir -p /var/run/sshd
+
+# --- Step 4: Download dan Setup Ngrok ---
+# Ngrok akan menjadi jembatan kita ke internet
+RUN wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip -O /ngrok-stable.zip \
     && cd / && unzip ngrok-stable.zip \
     && chmod +x ngrok \
     && rm ngrok-stable.zip
 
-# --- Step 3: Membuat Script Startup Utama (/openssh.sh) ---
-# Script ini akan menjalankan SSH server dan ngrok di background
-RUN mkdir -p /run/sshd \
-    && cat <<'EOF' > /openssh.sh
+# --- Step 5: Membuat User VPS (Mirip VPS sungguhan) ---
+# Kita buat user 'vpsadmin' sebagai user utama, bukan root.
+# Ganti 'your_super_secret_password' dengan password yang sangat kuat!
+RUN useradd -m -s /bin/bash vpsadmin && \
+    echo "vpsadmin:your_super_secret_password" | chpasswd && \
+    # Berikan hak akses sudo tanpa password (praktis, tapi kurang aman)
+    # Untuk keamanan lebih baik, hapus 'NOPASSWD:' sehingga diminta password user saat sudo
+    echo "vpsadmin ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/vpsadmin
+
+# --- Step 6: Membuat Script Startup untuk Ngrok & Info ---
+# Script ini akan dijalankan oleh systemd service saat boot
+RUN cat <<'EOF' > /usr/local/bin/start-ssh-tunnel.sh
 #!/bin/bash
-set -e
+echo "=== Starting Ngrok Tunnel for VPS SSH Access ==="
 
-echo "=== Container Startup Script ==="
-echo "Starting SSH server and Ngrok tunnel..."
-
-# Jalankan ngrok di background untuk port SSH (22)
+# Jalankan ngrok untuk SSH (port 22) di background
 /ngrok tcp --authtoken "${NGROK_TOKEN}" --region "${REGION}" 22 &
 
-# Tunggu ngrok siap
+# Tunggu beberapa saat agar ngrok sempat membuat tunnel
 sleep 10
 
-# Cetak informasi koneksi SSH
+# Cetak informasi koneksi SSH ke log
 echo "Fetching SSH tunnel info..."
 for i in {1..5}; do
-  TUNNEL_INFO=$(curl -s http://localhost:4040/api/tunnels)
+  TUNNEL_INFO=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null)
   if [ -n "$TUNNEL_INFO" ]; then
-    echo "$TUNNEL_INFO" | python3 -c "import sys, json; print('ssh info:\n', 'ssh', 'root@' + json.load(sys.stdin)['tunnels'][0]['public_url'][6:].replace(':', ' -p '), '\nROOT Password: craxid')"
+    echo "----------------------------------------------------"
+    echo "          VPS SSH ACCESS INFO"
+    echo "----------------------------------------------------"
+    echo "$TUNNEL_INFO" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for tunnel in data.get('tunnels', []):
+        if '22' in tunnel.get('config', {}).get('addr', ''):
+            url = tunnel.get('public_url', '')
+            host = url.split('://')[-1].split(':')[0]
+            port = url.split(':')[-1]
+            print(f'SSH Host: {host}')
+            print(f'SSH Port: {port}')
+            print(f'Username: vpsadmin')
+            print(f'Password: your_super_secret_password')
+            print('----------------------------------------------------')
+            print('Command to connect:')
+            print(f'ssh vpsadmin@{host} -p {port}')
+            print('----------------------------------------------------')
+            break
+    else:
+        print('Could not find SSH tunnel in Ngrok response.')
+except (json.JSONDecodeError, IndexError, KeyError):
+    print('Error parsing Ngrok response.')
+"
     break
   else
-    echo "SSH tunnel not ready yet, trying again in 5s... (attempt $i/5)"
+    echo "Ngrok tunnel not ready yet... (attempt $i/5)"
     sleep 5
   fi
 done
+EOF
+RUN chmod +x /usr/local/bin/start-ssh-tunnel.sh
 
-# Jalankan SSH server di foreground agar container tetap berjalan
-echo "Starting SSH server..."
-exec /usr/sbin/sshd -D
+# --- Step 7: Membuat Systemd Service untuk Ngrok ---
+# Agar ngrok otomatis dijalankan setiap kali container boot/restart
+RUN cat <<'EOF' > /etc/systemd/system/ngrok-ssh.service
+[Unit]
+Description=Ngrok TCP Tunnel for SSH
+After=network.target ssh.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/start-ssh-tunnel.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-# --- Step 4: Membuat Script Menu RDP (/menu.sh) ---
-# Ini adalah script yang akan Anda jalankan setelah login via SSH
-RUN cat <<'EOF' > /menu.sh
-#!/bin/bash
+# --- Step 8: Aktifkan Service saat Boot ---
+# Ini adalah perintah untuk mengaktifkan service agar otomatis jalan
+# ssh dan ngrok-ssh akan di-start oleh systemd saat container dijalankan
+RUN systemctl enable ssh.service ngrok-ssh.service
 
-# Warna dengan tput
-RED=$(tput setaf 1)
-GREEN=$(tput setaf 2)
-CYAN=$(tput setaf 6)
-MAGENTA=$(tput setaf 5)
-YELLOW=$(tput setaf 3)
-WHITE=$(tput setaf 7)
-BOLD=$(tput bold)
-RESET=$(tput sgr0)
+# --- Step 9: Mengekspos port SSH ---
+# Meskipun tidak langsung dipakai, ini bagus untuk dokumentasi
+EXPOSE 22
 
-# Fungsi untuk mendapatkan IP (akan menunjukkan IP internal container)
-get_ip() {
-    hostname -I | awk '{print $1}'
-}
-
-# Instalasi RDP
-install_rdp() {
-    echo ""
-    echo "${BOLD}${CYAN}💻 Instalasi RDP Dimulai...${RESET}"
-    echo "${YELLOW}PERINGATAN: Ini akan mengubah OS container menjadi Windows.${RESET}"
-    echo "${YELLOW}Proses ini memakan waktu dan VPS akan disconnect.${RESET}"
-    echo ""
-    read -p "Apakah Anda yakin? (y/n): " confirm
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        echo ""
-        echo "Mengunduh script installer..."
-        wget -q https://github.com/Bintang73/auto-install-rdp/raw/refs/heads/main/main -O setup
-        chmod +x setup
-        echo "Menjalankan installer..."
-        ./setup
-    else
-        echo "Instalasi dibatalkan."
-    fi
-    read -p "Tekan Enter untuk kembali ke menu..." dummy
-    main_menu
-}
-
-# Menu Utama
-main_menu() {
-    clear
-    echo "${CYAN}";
-    echo "██████╗ ██████╗ ██████╗       ██╗   ██╗██████╗ ███████╗";
-    echo "██╔══██╗██╔══██╗██╔══██╗      ██║   ██║██╔══██╗██╔════╝";
-    echo "██████╔╝██║  ██║██████╔╝█████╗██║   ██║██████╔╝███████╗";
-    echo "██╔══██╗██║  ██║██╔═══╝ ╚════╝╚██╗ ██╔╝██╔═══╝ ╚════██║";
-    echo "██║  ██║██████╔╝██║            ╚████╔╝ ██║     ███████║";
-    echo "╚═╝  ╚═╝╚═════╝ ╚═╝             ╚═══╝  ╚═╝     ╚══════╝";
-    echo "${RESET}";
-
-    echo "${GREEN}OS         : ${WHITE}Ubuntu Container${RESET}"
-    echo "${GREEN}SSH Access : ${WHITE}Aktif via Ngrok${RESET}"
-    echo "${GREEN}IP Internal: ${WHITE}$(get_ip)${RESET}"
-    echo "${GREEN}Powered By : ${WHITE}@starfz - PurwokertoDev${RESET}"
-    echo ""
-    echo "${MAGENTA}📋 Pilih Opsi:${RESET}"
-    echo "${CYAN}1.${RESET} ${WHITE}Auto Install RDP (Reinstall to Windows)${RESET}"
-    echo "${CYAN}2.${RESET} ${WHITE}Check System Info${RESET}"
-    echo "${CYAN}8.${RESET} ${RED}Exit Menu${RESET}"
-
-    echo ""
-    echo "${YELLOW}====================================================${RESET}"
-    echo ""
-
-    printf "${BOLD}${CYAN}Masukkan pilihan Anda (1, 2, 8): ${RESET}"
-    read pilihan
-
-    case "$pilihan" in
-        1) install_rdp ;;
-        2)
-            clear
-            echo "${YELLOW}📌 System Information${RESET}"
-            echo "OS Info:"
-            cat /etc/os-release
-            echo ""
-            echo "Memory Info:"
-            free -h
-            echo ""
-            echo "Disk Info:"
-            df -h
-            read -p "Tekan Enter untuk kembali ke menu..." dummy
-            main_menu
-            ;;
-        8)
-            echo ""
-            echo "${BOLD}${CYAN}👋 Kembali ke shell...${RESET}"
-            echo ""
-            # Keluar dari menu, kembali ke bash
-            ;;
-        *)
-            echo "${RED}Pilihan tidak valid. Silakan pilih antara 1, 2, atau 8.${RESET}"
-            sleep 1
-            main_menu
-            ;;
-    esac
-}
-
-# Jalankan menu
-main_menu
-EOF
-
-# --- Step 5: Konfigurasi Akhir ---
-# Memberikan permission pada script
-RUN chmod +x /openssh.sh /menu.sh
-
-# Mengatur password root dan konfigurasi SSH
-RUN echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config \
-    && echo root:craxid | chpasswd
-
-# Mengekspos port (meskipun tidak langsung digunakan di Cloud Run)
-EXPOSE 22 3389
-
-# Command utama yang dijalankan saat container start
-CMD ["/openssh.sh"]
+# --- Step 10: Command Utama (PID 1) ---
+# Ini adalah bagian terpenting. Kita menjalankan /sbin/init
+# yang akan memulai systemd sebagai proses utama (PID 1).
+# Systemd kemudian akan mengambil alih dan menjalankan semua
+# service yang sudah di-enable (ssh, ngrok-ssh).
+CMD ["/sbin/init"]
