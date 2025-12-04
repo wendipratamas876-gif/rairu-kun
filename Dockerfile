@@ -9,7 +9,7 @@ ENV container=docker
 # --- ARG untuk Build Time ---
 # Token Ngrok akan dimasukkan sebagai Railway environment variable
 ARG NGROK_TOKEN
-ARG REGION=ap
+ARG REGION=sg  # Mengubah ke region default yang lebih stabil
 
 # --- ENV untuk Runtime ---
 ENV NGROK_TOKEN=${NGROK_TOKEN}
@@ -69,15 +69,22 @@ RUN cat <<'EOF' > /usr/local/bin/start-ngrok-tunnel.sh
 #!/bin/bash
 echo "=== Starting Ngrok Tunnel for VPS SSH Access ==="
 
+# Pastikan token dan region tersedia
+if [ -z "$NGROK_TOKEN" ]; then
+    echo "ERROR: NGROK_TOKEN is not set!"
+    exit 1
+fi
+
 # Jalankan ngrok untuk SSH (port 22) di background
+echo "Starting ngrok with region: ${REGION}"
 /ngrok tcp --authtoken "${NGROK_TOKEN}" --region "${REGION}" 22 &
 
 # Tunggu ngrok siap
-sleep 10
+sleep 15
 
 # Cetak informasi koneksi SSH ke log
 echo "Fetching SSH tunnel info..."
-for i in {1..5}; do
+for i in {1..10}; do
   TUNNEL_INFO=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null)
   if [ -n "$TUNNEL_INFO" ]; then
     echo "----------------------------------------------------"
@@ -108,7 +115,7 @@ except Exception as e:
 "
     break
   else
-    echo "Ngrok tunnel not ready yet... (attempt $i/5)"
+    echo "Ngrok tunnel not ready yet... (attempt $i/10)"
     sleep 5
   fi
 done
@@ -125,9 +132,8 @@ Wants=ssh.service
 
 [Service]
 Type=oneshot
-# Berikan akses ke environment variable
-Environment="NGROK_TOKEN=${NGROK_TOKEN}"
-Environment="REGION=${REGION}"
+# Menggunakan environment file untuk memastikan variabel tersedia
+EnvironmentFile=/etc/environment
 ExecStart=/usr/local/bin/start-ngrok-tunnel.sh
 RemainAfterExit=yes
 
@@ -135,16 +141,21 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
-# --- Step 8: Aktifkan Service saat Boot ---
+# --- Step 8: Menyimpan Environment Variables ---
+# Menyimpan environment variables ke file yang bisa dibaca oleh systemd
+RUN echo "NGROK_TOKEN=${NGROK_TOKEN}" >> /etc/environment && \
+    echo "REGION=${REGION}" >> /etc/environment
+
+# --- Step 9: Aktifkan Service saat Boot ---
 # Ini adalah perintah VPS asli! Mengaktifkan service agar jalan otomatis.
 RUN systemctl enable ssh.service ngrok-ssh-tunnel.service
 
-# --- Step 9: Mengekspos port ---
+# --- Step 10: Mengekspos port ---
 EXPOSE 22
 
-# --- Step 10: Memberi tahu Docker cara menghentikan container dengan benar ---
+# --- Step 11: Memberi tahu Docker cara menghentikan container dengan benar ---
 STOPSIGNAL SIGRTMIN+3
 
-# --- Step 11: Command Utama (PID 1) ---
+# --- Step 12: Command Utama (PID 1) ---
 # Ini adalah perintah untuk menjalankan systemd sebagai proses utama.
 CMD ["/sbin/init"]
