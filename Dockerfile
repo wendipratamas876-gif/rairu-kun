@@ -61,7 +61,7 @@ RUN wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip
 
 # --- Step 5: Membuat User VPS (Mirip VPS sungguhan) ---
 # Kita buat user 'vpsadmin' sebagai user utama, bukan root.
-# Ganti 'your_super_secret_password' dengan password yang sangat kuat!
+# GANTI 'your_super_secret_password' dengan password yang sangat kuat!
 RUN useradd -m -s /bin/bash vpsadmin && \
     echo "vpsadmin:your_super_secret_password" | chpasswd && \
     # Berikan hak akses sudo tanpa password (praktis, tapi kurang aman)
@@ -145,7 +145,10 @@ RUN systemctl enable ssh.service ngrok-ssh.service
 # Meskipun tidak langsung dipakai, ini bagus untuk dokumentasi
 EXPOSE 22
 
-# --- Step 10: Command Utama (PID 1) ---
+# --- Step 10: Memberi tahu Docker cara menghentikan container dengan benar ---
+STOPSIGNAL SIGRTMIN+3
+
+# --- Step 11: Command Utama (PID 1) ---
 # Ini adalah bagian terpenting. Kita menjalankan /sbin/init
 # yang akan memulai systemd sebagai proses utama (PID 1).
 # Systemd kemudian akan mengambil alih dan menjalankan semua
