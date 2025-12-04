@@ -9,7 +9,7 @@ ENV container=docker
 # --- ARG untuk Build Time ---
 # Token Ngrok akan dimasukkan sebagai Railway environment variable
 ARG NGROK_TOKEN
-ARG REGION=sg  # Mengubah ke region default yang lebih stabil
+ARG REGION=us  # Mengubah ke region default yang lebih stabil
 
 # --- ENV untuk Runtime ---
 ENV NGROK_TOKEN=${NGROK_TOKEN}
