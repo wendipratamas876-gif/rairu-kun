@@ -1,9 +1,3 @@
-[build]
-# Perintah build tetap standar
-command = "npx railway run docker build -t railway ."
-
-[deploy]
-# Ini adalah bagian penting. Kita memberikan argumen tambahan
-# ke perintah 'docker run' yang dijalankan oleh Railway.
-# --privileged dan --pid=host adalah kunci untuk systemd.
-startCommand = "--privileged --pid=host"
+git add railway.toml
+git commit -m "Fix railway.toml startCommand syntax"
+git push
