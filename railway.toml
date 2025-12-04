@@ -1,18 +1,8 @@
-version: '3.8'
+[build]
+# Perintah build tetap sama
+command = "docker build -t railway ."
 
-services:
-  # Nama service kita, bebas tapi sebaiknya deskriptif
-  vps:
-    # Bangun image dari Dockerfile di direktori yang sama (.)
-    build: .
-    # Beri nama container agar mudah diidentifikasi di log
-    container_name: railway-vps
-    # Ini adalah bagian TERPENTING!
-    # --privileged: Memberikan hak akses penuh ke container, WAJIB untuk systemd.
-    # pid: host: Menggunakan PID namespace dari host, juga WAJIB untuk systemd.
-    privileged: true
-    pid: host
-    # Pastikan container selalu restart jika crash, mirip layanan di VPS sungguhan
-    restart: unless-stopped
-    # Railway akan secara otomatis menangani port forwarding
-    # berdasarkan EXPOSE di Dockerfile, jadi tidak perlu definisi 'ports' di sini.
+[deploy]
+# Kita ganti npx dengan docker run langsung
+# --privileged dan --pid=host WAJIB untuk systemd
+startCommand = "docker run --privileged --pid=host --rm railway"
