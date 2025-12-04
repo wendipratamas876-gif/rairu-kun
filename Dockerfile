@@ -1,109 +1,88 @@
 # Menggunakan Ubuntu 22.04 LTS sebagai base image
 FROM ubuntu:22.04
 
-# Non-interactive install agar tidak meminta input saat proses build
+# Set non-interactive mode
 ENV DEBIAN_FRONTEND=noninteractive
-# Variabel krusial agar systemd bisa berjalan di dalam container
-ENV container=docker
 
 # --- ARG untuk Build Time ---
 ARG NGROK_TOKEN
-ARG REGION=us
+ARG REGION=ap
 
 # --- ENV untuk Runtime ---
 ENV NGROK_TOKEN=${NGROK_TOKEN}
 ENV REGION=${REGION}
 
-# --- Step 1: Instalasi Paket Dasar VPS ---
+# --- Step 1: Instalasi Paket VPS Lengkap ---
 # Install semua paket yang biasa ada di VPS sungguhan
-RUN apt-get update && apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends \
-    # Sistem init dan manajemen service (JANTUNG VPS)
-    systemd systemd-sysv \
-    # SSH Server untuk akses remote
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
+    # SSH Server
     openssh-server \
-    # Utilitas wajib di VPS
-    sudo curl wget git vim htop net-tools unzip tar gnupg2 ca-certificates lsb-release \
-    # Python dan pip
+    # Utilitas jaringan
+    wget curl net-tools iproute2 dnsutils iputils-ping \
+    # Text editor
+    vim nano \
+    # System monitoring
+    htop iotop \
+    # File management
+    tar unzip zip gzip bzip2 \
+    # Version control
+    git \
+    # Python dan tools
     python3 python3-pip python3-venv \
-    # Network tools
-    iproute2 iptables \
-    # Logging
-    systemd-journal-remote \
     # Process management
     cron \
-    # Text editor
-    nano \
-    # Network utilities
-    dnsutils iputils-ping \
-    # File system utilities
-    xfsprogs e2fsprogs \
-    # Disk utilities
-    parted fdisk \
+    # System utilities
+    sudo \
+    # SSL certificates
+    ca-certificates \
+    # Clean up
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# --- Step 2: Konfigurasi Systemd untuk Lingkungan Container ---
-# Langkah ini membersihkan service-service yang tidak relevan atau konflik
-# saat systemd dijalankan di dalam container
-RUN (cd /lib/systemd/system/sysinit.target.wants/; for i in *; do [ $i == systemd-tmpfiles-setup.service ] || rm -f $i; done); \
-    rm -f /lib/systemd/system/multi-user.target.wants/*;\
-    rm -f /etc/systemd/system/*.wants/*;\
-    rm -f /lib/systemd/system/local-fs.target.wants/*; \
-    rm -f /lib/systemd/system/sockets.target.wants/*udev*; \
-    rm -f /lib/systemd/system/sockets.target.wants/*initctl*; \
-    rm -f /lib/systemd/system/basic.target.wants/*;\
-    rm -f /lib/systemd/system/anaconda.target.wants/*;
-
-# --- Step 3: Konfigurasi SSH Server ---
-# Aktifkan login dengan password dan izinkan root login
-RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
-    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
-    # Buat direktori untuk host keys jika belum ada
-    mkdir -p /var/run/sshd
-
-# --- Step 4: Setup User dan Password ---
-# Setup user root dengan password
-RUN echo "root:kelvin123" | chpasswd
-
-# --- Step 5: Download dan Setup Ngrok ---
-# Ngrok akan menjadi jembatan kita ke internet
-RUN wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip -O /ngrok-stable.zip \
-    && cd / && unzip ngrok-stable.zip \
+# --- Step 2: Download dan Setup Ngrok ---
+RUN wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip -O /ngrok-stable-linux-amd64.zip \
+    && cd / && unzip ngrok-stable-linux-amd64.zip \
     && chmod +x ngrok \
-    && rm ngrok-stable.zip
+    && rm ngrok-stable-linux-amd64.zip
 
-# --- Step 6: Membuat Script Startup untuk Ngrok ---
-# Script ini akan dijalankan oleh systemd service saat boot
-RUN cat <<'EOF' > /usr/local/bin/start-ngrok-tunnel.sh
+# --- Step 3: Setup SSH Server ---
+RUN mkdir /run/sshd \
+    && echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config \
+    && echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config \
+    && echo root:kelvin123 | chpasswd
+
+# --- Step 4: Generate SSH Host Keys ---
+RUN ssh-keygen -A
+
+# --- Step 5: Setup Cron untuk VPS ---
+# Create cron directory and start cron service
+RUN mkdir -p /var/spool/cron/crontabs
+
+# --- Step 6: Membuat Script Startup VPS ---
+# Script yang menjalankan semua service VPS
+RUN cat <<'EOF' > /start-vps.sh
 #!/bin/bash
-echo "=== Starting Ngrok Tunnel for VPS SSH Access ==="
 
-# Pastikan token dan region tersedia
-if [ -z "$NGROK_TOKEN" ]; then
-    echo "ERROR: NGROK_TOKEN is not set!"
-    exit 1
-fi
+echo "=== Starting VPS Services ==="
 
-# Log token untuk debugging (hanya karakter pertama dan terakhir)
-echo "Using NGROK_TOKEN: ${NGROK_TOKEN:0:2}...${NGROK_TOKEN: -2}"
-echo "Using REGION: ${REGION}"
+# Start cron service
+echo "Starting cron service..."
+service cron start
 
-# Jalankan ngrok untuk SSH (port 22) di background
-echo "Starting ngrok with region: ${REGION}"
+# Start ngrok tunnel for SSH
+echo "Starting ngrok tunnel..."
 /ngrok tcp --authtoken "${NGROK_TOKEN}" --region "${REGION}" 22 > /var/log/ngrok.log 2>&1 &
+NGROK_PID=$!
 
-# Tunggu ngrok siap
-echo "Waiting for ngrok to start..."
-sleep 15
+# Wait for ngrok to initialize
+echo "Waiting for ngrok to initialize..."
+sleep 10
 
-# Cetak informasi koneksi SSH ke log
-echo "Fetching SSH tunnel info..."
-for i in {1..10}; do
+# Get SSH connection info
+echo "=== SSH Connection Information ==="
+for i in {1..5}; do
   TUNNEL_INFO=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null)
   if [ -n "$TUNNEL_INFO" ]; then
-    echo "----------------------------------------------------"
-    echo "          VPS SSH ACCESS INFO"
-    echo "----------------------------------------------------"
     echo "$TUNNEL_INFO" | python3 -c "
 import sys, json
 try:
@@ -117,10 +96,8 @@ try:
             print(f'SSH Port: {port}')
             print(f'Username: root')
             print(f'Password: kelvin123')
-            print('----------------------------------------------------')
             print('Command to connect:')
             print(f'ssh root@{host} -p {port}')
-            print('----------------------------------------------------')
             break
     else:
         print('Could not find SSH tunnel in Ngrok response.')
@@ -129,64 +106,29 @@ except Exception as e:
 "
     break
   else
-    echo "Ngrok tunnel not ready yet... (attempt $i/10)"
+    echo "Ngrok tunnel not ready yet... (attempt $i/5)"
     sleep 5
   fi
 done
 
-# Log status ngrok
-echo "Ngrok process status:"
-ps aux | grep ngrok
-EOF
-RUN chmod +x /usr/local/bin/start-ngrok-tunnel.sh
+# Start SSH server
+echo "Starting SSH server..."
+/usr/sbin/sshd -D &
+SSH_PID=$!
 
-# --- Step 7: Membuat Systemd Service untuk Ngrok ---
-# Agar ngrok otomatis dijalankan setiap kali container boot/restart
-RUN cat <<'EOF' > /etc/systemd/system/ngrok-ssh.service
-[Unit]
-Description=Ngrok TCP Tunnel for SSH
-After=network.target ssh.service
-Wants=ssh.service
+echo "=== VPS Services Started Successfully ==="
+echo "SSH PID: $SSH_PID"
+echo "Ngrok PID: $NGROK_PID"
 
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/start-ngrok-tunnel.sh
-RemainAfterExit=yes
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
+# Keep container running
+wait $SSH_PID $NGROK_PID
 EOF
 
-# --- Step 8: Menyimpan Environment Variables ---
-# Menyimpan environment variables ke file yang bisa dibaca oleh systemd
-RUN echo "NGROK_TOKEN=${NGROK_TOKEN}" >> /etc/environment && \
-    echo "REGION=${REGION}" >> /etc/environment
+# Make the script executable
+RUN chmod +x /start-vps.sh
 
-# --- Step 9: Setup Host Keys untuk SSH ---
-# Generate host keys jika belum ada
-RUN ssh-keygen -A
+# --- Step 7: Expose Ports ---
+EXPOSE 22 80 443 3306 4040 5432 5700 5701 5010 6800 6900 8080 8888 9000
 
-# --- Step 10: Aktifkan Service saat Boot ---
-# Mengaktifkan service agar otomatis jalan saat boot
-RUN systemctl enable ssh.service ngrok-ssh.service
-
-# --- Step 11: Setup Cron ---
-# Enable cron service
-RUN systemctl enable cron.service
-
-# --- Step 12: Setup Journal ---
-# Configure systemd journal to persist logs
-RUN mkdir -p /var/log/journal && \
-    systemd-tmpfiles --create --prefix /var/log/journal
-
-# --- Step 13: Mengekspos port SSH ---
-EXPOSE 22
-
-# --- Step 14: Memberi tahu Docker cara menghentikan container dengan benar ---
-STOPSIGNAL SIGRTMIN+3
-
-# --- Step 15: Command Utama (PID 1) ---
-# Menjalankan systemd sebagai proses utama (PID 1)
-CMD ["/sbin/init"]
+# --- Step 8: Start VPS ---
+CMD ["/start-vps.sh"]
