@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # --- ARG untuk Build Time ---
 ARG NGROK_TOKEN
-ARG REGION=sg
+ARG REGION=ap
 
 # --- ENV untuk Runtime ---
 ENV NGROK_TOKEN=${NGROK_TOKEN}
