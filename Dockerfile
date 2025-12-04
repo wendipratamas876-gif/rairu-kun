@@ -1,3 +1,4 @@
+###########################################################
 # Ubuntu 22.04 + Systemd + Docker + SSH + Ngrok
 # Build:  docker build --build-arg NGROK_TOKEN=isi_token -t vps-full .
 # Run:    docker run --privileged -d --name vps -p 22:22 -p 4040:4040 vps-full
@@ -16,14 +17,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NGROK_TOKEN=$NGROK_TOKEN \
     REGION=$REGION
 
-# 1. Base packages + systemd + docker deps
+# 1. base packages + systemd + docker deps
 RUN apt-get update && apt-get install -y \
       openssh-server sudo systemd systemd-sysv nano vim curl wget net-tools \
       dnsutils iputils-ping htop git python3 python3-pip locales && \
     locale-gen en_US.UTF-8 && \
     apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# 2. Systemd strip (biar ringan)
+# 2. systemd strip (biar ringan)
 RUN cd /lib/systemd/system/sysinit.target.wants && \
     ls | grep -v systemd-tmpfiles-setup | xargs rm -f && \
     rm -f /lib/systemd/system/multi-user.target.wants/* \
@@ -36,7 +37,7 @@ RUN cd /lib/systemd/system/sysinit.target.wants && \
           /lib/systemd/system/plymouth* \
           /lib/systemd/system/systemd-update-utmp*
 
-# 3. Install Docker (dind ready)
+# 3. install Docker (dind ready)
 RUN curl -fsSL https://get.docker.com | bash && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -47,8 +48,8 @@ RUN mkdir -p /run/sshd && \
     echo 'root:kelvin123' | chpasswd && \
     ssh-keygen -A
 
-# 5. Create user (skip groupadd kalau GID 1000 sudah ada)
-RUN deluser ubuntu 2>/dev/null || true && \
+# 5. create user (pastikan group 1000 ada dulu)
+RUN groupadd --gid $USER_GID $USERNAME 2>/dev/null || true && \
     useradd --uid $USER_UID --gid $USER_GID -m -s /bin/bash $USERNAME && \
     echo "$USERNAME ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME && \
     chmod 0440 /etc/sudoers.d/$USERNAME && \
@@ -59,18 +60,18 @@ RUN deluser ubuntu 2>/dev/null || true && \
 RUN wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip -O /ngrok.zip && \
     cd / && unzip ngrok.zip && rm ngrok.zip && chmod +x ngrok
 
-# 7. Systemd enable services
+# 7. systemd enable services
 RUN systemctl enable ssh docker
 
-# 8. Startup script (systemd + ngrok + ssh)
+# 8. startup script (systemd + ngrok + ssh)
 RUN printf '#!/bin/bash\n\
 systemctl start docker\n\
 service cron start\n\
 /ngrok tcp --authtoken "${NGROK_TOKEN}" --region "${REGION}" 22 > /var/log/ngrok.log 2>&1 &\n\
 exec /usr/sbin/sshd -D\n' > /start-vps.sh && chmod +x /start-vps.sh
 
-# 9. Expose ports
+# 9. expose ports
 EXPOSE 22 80 443 3306 4040 5432 5700 5701 5010 6800 6900 8080 8888 9000
 
-# 10. Run
+# 10. run
 CMD ["/start-vps.sh"]
