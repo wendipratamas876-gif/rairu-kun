@@ -1,0 +1,6 @@
+[build]
+command = "npx railway run docker build -t railway ."
+
+[deploy]
+# --privileged dan --pid=host adalah kunci kesuksesan menjalankan systemd
+startCommand = "npx railway run docker run --privileged --pid=host --rm railway"
