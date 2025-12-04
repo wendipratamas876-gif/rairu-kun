@@ -31,6 +31,8 @@ RUN apt-get update && apt-get upgrade -y && \
     ufw \
     # Network tools
     iproute2 iptables \
+    # CAs untuk apt
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Step 2: Konfigurasi Systemd untuk Lingkungan Container ---
@@ -51,7 +53,7 @@ RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/
     mkdir -p /var/run/sshd
 
 # --- Step 4: Setup User Root ---
-# Ganti password root menjadi 'kelvin123'
+# Sesuai permintaan: username root, password kelvin123
 RUN echo "root:kelvin123" | chpasswd
 
 # --- Step 5: Download dan Setup Ngrok ---
@@ -144,5 +146,5 @@ EXPOSE 22
 STOPSIGNAL SIGRTMIN+3
 
 # --- Step 11: Command Utama (PID 1) ---
-# Ini adalah perintah WAJIB untuk Railway agar systemd jalan sebagai proses utama.
-CMD ["railway", "run", "--privileged", "--pid=host", "/sbin/init"]
+# Ini adalah perintah untuk menjalankan systemd sebagai proses utama.
+CMD ["/sbin/init"]
