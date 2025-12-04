@@ -26,8 +26,6 @@ RUN apt-get update && apt-get upgrade -y && \
     sudo curl wget git vim htop net-tools unzip tar gnupg2 ca-certificates lsb-release \
     # Python dan pip
     python3 python3-pip python3-venv \
-    # Firewall
-    ufw \
     # Network tools
     iproute2 iptables \
     # Logging
@@ -166,10 +164,9 @@ EOF
 RUN echo "NGROK_TOKEN=${NGROK_TOKEN}" >> /etc/environment && \
     echo "REGION=${REGION}" >> /etc/environment
 
-# --- Step 9: Konfigurasi Firewall ---
-# Setup UFW firewall
-RUN ufw allow 22/tcp && \
-    echo "y" | ufw enable
+# --- Step 9: Setup Host Keys untuk SSH ---
+# Generate host keys jika belum ada
+RUN ssh-keygen -A
 
 # --- Step 10: Aktifkan Service saat Boot ---
 # Mengaktifkan service agar otomatis jalan saat boot
