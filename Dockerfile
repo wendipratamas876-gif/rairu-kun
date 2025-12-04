@@ -1,134 +1,76 @@
-# Menggunakan Ubuntu 22.04 LTS sebagai base image
+# Ubuntu 22.04 + Systemd + Docker + SSH + Ngrok
+# Build:  docker build --build-arg NGROK_TOKEN=isi_token -t vps-full .
+# Run:    docker run --privileged -d --name vps -p 22:22 -p 4040:4040 vps-full
+###########################################################
+
 FROM ubuntu:22.04
 
-# Set non-interactive mode
-ENV DEBIAN_FRONTEND=noninteractive
-
-# --- ARG untuk Build Time ---
 ARG NGROK_TOKEN
 ARG REGION=ap
+ARG USERNAME=user
+ARG USER_UID=1000
+ARG USER_GID=1000
 
-# --- ENV untuk Runtime ---
-ENV NGROK_TOKEN=${NGROK_TOKEN}
-ENV REGION=${REGION}
+ENV DEBIAN_FRONTEND=noninteractive \
+    container=docker \
+    NGROK_TOKEN=$NGROK_TOKEN \
+    REGION=$REGION
 
-# --- Step 1: Instalasi Paket VPS Lengkap ---
-# Install semua paket yang biasa ada di VPS sungguhan
-RUN apt-get update && apt-get upgrade -y && apt-get install -y \
-    # SSH Server
-    openssh-server \
-    # Utilitas jaringan
-    wget curl net-tools iproute2 dnsutils iputils-ping \
-    # Text editor
-    vim nano \
-    # System monitoring
-    htop iotop \
-    # File management
-    tar unzip zip gzip bzip2 \
-    # Version control
-    git \
-    # Python dan tools
-    python3 python3-pip python3-venv \
-    # Process management
-    cron \
-    # System utilities
-    sudo \
-    # SSL certificates
-    ca-certificates \
-    # Clean up
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# 1. Base packages + systemd + docker deps
+RUN apt-get update && apt-get install -y \
+      openssh-server sudo systemd systemd-sysv nano vim curl wget net-tools \
+      dnsutils iputils-ping htop git python3 python3-pip locales && \
+    locale-gen en_US.UTF-8 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# --- Step 2: Download dan Setup Ngrok ---
-RUN wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip -O /ngrok-stable-linux-amd64.zip \
-    && cd / && unzip ngrok-stable-linux-amd64.zip \
-    && chmod +x ngrok \
-    && rm ngrok-stable-linux-amd64.zip
+# 2. Systemd strip (biar ringan)
+RUN cd /lib/systemd/system/sysinit.target.wants && \
+    ls | grep -v systemd-tmpfiles-setup | xargs rm -f && \
+    rm -f /lib/systemd/system/multi-user.target.wants/* \
+          /etc/systemd/system/*.wants/* \
+          /lib/systemd/system/local-fs.target.wants/* \
+          /lib/systemd/system/sockets.target.wants/*udev* \
+          /lib/systemd/system/sockets.target.wants/*initctl* \
+          /lib/systemd/system/basic.target.wants/* \
+          /lib/systemd/system/anaconda.target.wants/* \
+          /lib/systemd/system/plymouth* \
+          /lib/systemd/system/systemd-update-utmp*
 
-# --- Step 3: Setup SSH Server ---
-RUN mkdir /run/sshd \
-    && echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config \
-    && echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config \
-    && echo root:kelvin123 | chpasswd
+# 3. Install Docker (dind ready)
+RUN curl -fsSL https://get.docker.com | bash && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# --- Step 4: Generate SSH Host Keys ---
-RUN ssh-keygen -A
+# 4. SSH server setup
+RUN mkdir -p /run/sshd && \
+    sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    echo 'root:kelvin123' | chpasswd && \
+    ssh-keygen -A
 
-# --- Step 5: Setup Cron untuk VPS ---
-# Create cron directory and start cron service
-RUN mkdir -p /var/spool/cron/crontabs
+# 5. Create user (skip groupadd kalau GID 1000 sudah ada)
+RUN deluser ubuntu 2>/dev/null || true && \
+    useradd --uid $USER_UID --gid $USER_GID -m -s /bin/bash $USERNAME && \
+    echo "$USERNAME ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME && \
+    chmod 0440 /etc/sudoers.d/$USERNAME && \
+    usermod -aG docker $USERNAME && \
+    echo "$USERNAME:ruse" | chpasswd
 
-# --- Step 6: Membuat Script Startup VPS ---
-# Script yang menjalankan semua service VPS
-RUN cat <<'EOF' > /start-vps.sh
-#!/bin/bash
+# 6. Ngrok binary
+RUN wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip -O /ngrok.zip && \
+    cd / && unzip ngrok.zip && rm ngrok.zip && chmod +x ngrok
 
-echo "=== Starting VPS Services ==="
+# 7. Systemd enable services
+RUN systemctl enable ssh docker
 
-# Start cron service
-echo "Starting cron service..."
-service cron start
+# 8. Startup script (systemd + ngrok + ssh)
+RUN printf '#!/bin/bash\n\
+systemctl start docker\n\
+service cron start\n\
+/ngrok tcp --authtoken "${NGROK_TOKEN}" --region "${REGION}" 22 > /var/log/ngrok.log 2>&1 &\n\
+exec /usr/sbin/sshd -D\n' > /start-vps.sh && chmod +x /start-vps.sh
 
-# Start ngrok tunnel for SSH
-echo "Starting ngrok tunnel..."
-/ngrok tcp --authtoken "${NGROK_TOKEN}" --region "${REGION}" 22 > /var/log/ngrok.log 2>&1 &
-NGROK_PID=$!
-
-# Wait for ngrok to initialize
-echo "Waiting for ngrok to initialize..."
-sleep 10
-
-# Get SSH connection info
-echo "=== SSH Connection Information ==="
-for i in {1..5}; do
-  TUNNEL_INFO=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null)
-  if [ -n "$TUNNEL_INFO" ]; then
-    echo "$TUNNEL_INFO" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    for tunnel in data.get('tunnels', []):
-        if '22' in tunnel.get('config', {}).get('addr', ''):
-            url = tunnel.get('public_url', '')
-            host = url.split('://')[-1].split(':')[0]
-            port = url.split(':')[-1]
-            print(f'SSH Host: {host}')
-            print(f'SSH Port: {port}')
-            print(f'Username: root')
-            print(f'Password: kelvin123')
-            print('Command to connect:')
-            print(f'ssh root@{host} -p {port}')
-            break
-    else:
-        print('Could not find SSH tunnel in Ngrok response.')
-except Exception as e:
-    print(f'Error parsing Ngrok response: {e}')
-"
-    break
-  else
-    echo "Ngrok tunnel not ready yet... (attempt $i/5)"
-    sleep 5
-  fi
-done
-
-# Start SSH server
-echo "Starting SSH server..."
-/usr/sbin/sshd -D &
-SSH_PID=$!
-
-echo "=== VPS Services Started Successfully ==="
-echo "SSH PID: $SSH_PID"
-echo "Ngrok PID: $NGROK_PID"
-
-# Keep container running
-wait $SSH_PID $NGROK_PID
-EOF
-
-# Make the script executable
-RUN chmod +x /start-vps.sh
-
-# --- Step 7: Expose Ports ---
+# 9. Expose ports
 EXPOSE 22 80 443 3306 4040 5432 5700 5701 5010 6800 6900 8080 8888 9000
 
-# --- Step 8: Start VPS ---
+# 10. Run
 CMD ["/start-vps.sh"]
