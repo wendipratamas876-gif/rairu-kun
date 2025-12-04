@@ -1,3 +1,8 @@
-git add railway.toml
-git commit -m "Fix railway.toml startCommand syntax"
-git push
+[build]
+# Perintah untuk membangun image, ini sudah bener
+command = "npx railway run docker build -t railway ."
+
+[deploy]
+# Perintah untuk menjalankan container, harus LENGKAP!
+# Kita harus tulis sendiri perintah "docker run"-nya.
+startCommand = "npx railway run docker run --privileged --pid=host --rm railway"
