@@ -1,13 +1,12 @@
-# Menggunakan Ubuntu 22.04 LTS sebagai base image, versi yang umum di VPS
+# Menggunakan Ubuntu 22.04 LTS sebagai base image
 FROM ubuntu:22.04
 
-# Non-interactive install agar tidak meminta input saat proses build
+# Non-interactive install
 ENV DEBIAN_FRONTEND=noninteractive
-# Variabel krusial agar systemd bisa berjalan di dalam container
+# Variabel krusial agar systemd bisa berjalan
 ENV container=docker
 
 # --- ARG untuk Build Time ---
-# Token Ngrok akan dimasukkan sebagai Railway environment variable
 ARG NGROK_TOKEN
 ARG REGION=ap
 
@@ -16,24 +15,16 @@ ENV NGROK_TOKEN=${NGROK_TOKEN}
 ENV REGION=${REGION}
 
 # --- Step 1: Instalasi Paket Dasar VPS ---
-# Kita install systemd, openssh-server, dan utilitas umum VPS
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
-    # Sistem init dan manajemen service (JANTUNG VPS)
     systemd systemd-sysv \
-    # SSH Server untuk akses remote
     openssh-server \
-    # Utilitas wajib di VPS
-    sudo curl wget git vim htop net-tools unzip tar gnupg2 ca-certificates lsb-release \
-    # Python dan pip (sering dibutuhkan untuk berbagai tool dan app)
-    python3 python3-pip python3-venv \
-    # Firewall (opsional, tapi bagus untuk simulasi VPS)
-    ufw \
+    sudo curl wget git vim htop net-tools unzip tar \
+    python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# --- Step 2: Konfigurasi Systemd untuk Lingkungan Container ---
-# Langkah ini membersihkan service-service yang tidak relevan atau konflik
-# saat systemd dijalankan di dalam container. Ini adalah langkah standar.
+# --- Step 2: Konfigurasi Systemd untuk Container ---
+# (Bagian ini sudah benar, biarkan saja)
 RUN (cd /lib/systemd/system/sysinit.target.wants/; for i in *; do [ $i == systemd-tmpfiles-setup.service ] || rm -f $i; done); \
     rm -f /lib/systemd/system/multi-user.target.wants/*;\
     rm -f /etc/systemd/system/*.wants/*;\
@@ -44,41 +35,42 @@ RUN (cd /lib/systemd/system/sysinit.target.wants/; for i in *; do [ $i == system
     rm -f /lib/systemd/system/anaconda.target.wants/*;
 
 # --- Step 3: Konfigurasi SSH Server ---
-# Aktifkan login dengan password dan izinkan root login (untuk kemudahan akses awal)
-# Di VPS sungguhan, biasanya login root via password dinonaktifkan, dan menggunakan SSH key.
-# Tapi untuk simulasi di container, ini lebih praktis.
+# (Bagian ini sudah benar, biarkan saja)
 RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
     sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
-    # Buat direktori untuk host keys jika belum ada
     mkdir -p /var/run/sshd
 
 # --- Step 4: Download dan Setup Ngrok ---
-# Ngrok akan menjadi jembatan kita ke internet
+# (Bagian ini sudah benar, biarkan saja)
 RUN wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip -O /ngrok-stable.zip \
     && cd / && unzip ngrok-stable.zip \
     && chmod +x ngrok \
     && rm ngrok-stable.zip
 
-# --- Step 5: Membuat User VPS (Mirip VPS sungguhan) ---
-# Kita buat user 'vpsadmin' sebagai user utama, bukan root.
-# GANTI 'your_super_secret_password' dengan password yang sangat kuat!
+# --- Step 5: Membuat User VPS ---
+# GANTI 'your_super_secret_password'!
 RUN useradd -m -s /bin/bash vpsadmin && \
     echo "vpsadmin:your_super_secret_password" | chpasswd && \
-    # Berikan hak akses sudo tanpa password (praktis, tapi kurang aman)
-    # Untuk keamanan lebih baik, hapus 'NOPASSWD:' sehingga diminta password user saat sudo
     echo "vpsadmin ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/vpsadmin
 
 # --- Step 6: Membuat Script Startup untuk Ngrok & Info ---
-# Script ini akan dijalankan oleh systemd service saat boot
+# Script ini sedikit diperbaiki untuk debugging
 RUN cat <<'EOF' > /usr/local/bin/start-ssh-tunnel.sh
 #!/bin/bash
 echo "=== Starting Ngrok Tunnel for VPS SSH Access ==="
 
+# Debug: Cek apakah token ada
+if [ -z "$NGROK_TOKEN" ]; then
+    echo "ERROR: NGROK_TOKEN is not set!"
+    exit 1
+fi
+echo "Ngrok token found. Starting tunnel..."
+
 # Jalankan ngrok untuk SSH (port 22) di background
 /ngrok tcp --authtoken "${NGROK_TOKEN}" --region "${REGION}" 22 &
 
-# Tunggu beberapa saat agar ngrok sempat membuat tunnel
-sleep 10
+# Tunggu lebih lama, biar ngrok benar-bener siap
+sleep 15
 
 # Cetak informasi koneksi SSH ke log
 echo "Fetching SSH tunnel info..."
@@ -108,8 +100,10 @@ try:
             break
     else:
         print('Could not find SSH tunnel in Ngrok response.')
-except (json.JSONDecodeError, IndexError, KeyError):
-    print('Error parsing Ngrok response.')
+except (json.JSONDecodeError, IndexError, KeyError, TypeError) as e:
+    print(f'Error parsing Ngrok response: {e}')
+    print('Raw response:')
+    print('$TUNNEL_INFO')
 "
     break
   else
@@ -121,14 +115,18 @@ EOF
 RUN chmod +x /usr/local/bin/start-ssh-tunnel.sh
 
 # --- Step 7: Membuat Systemd Service untuk Ngrok ---
-# Agar ngrok otomatis dijalankan setiap kali container boot/restart
+# PERBAIKAN: Tambahkan Environment agar service bisa baca token
 RUN cat <<'EOF' > /etc/systemd/system/ngrok-ssh.service
 [Unit]
 Description=Ngrok TCP Tunnel for SSH
-After=network.target ssh.service
+# PERBAIKAN: Hanya butuh network, jangan tunggu ssh
+After=network.target
 
 [Service]
 Type=oneshot
+# PERBAIKAN: Beritahu systemd environment variable-nya apa
+Environment="NGROK_TOKEN=${NGROK_TOKEN}"
+Environment="REGION=${REGION}"
 ExecStart=/usr/local/bin/start-ssh-tunnel.sh
 RemainAfterExit=yes
 
@@ -137,20 +135,15 @@ WantedBy=multi-user.target
 EOF
 
 # --- Step 8: Aktifkan Service saat Boot ---
-# Ini adalah perintah untuk mengaktifkan service agar otomatis jalan
-# ssh dan ngrok-ssh akan di-start oleh systemd saat container dijalankan
+# (Bagian ini sudah benar, biarkan saja)
 RUN systemctl enable ssh.service ngrok-ssh.service
 
-# --- Step 9: Mengekspos port SSH ---
-# Meskipun tidak langsung dipakai, ini bagus untuk dokumentasi
+# --- Step 9: Mengekspos port ---
 EXPOSE 22
 
-# --- Step 10: Memberi tahu Docker cara menghentikan container dengan benar ---
+# --- Step 10: Memberi tahu Docker cara menghentikan container ---
 STOPSIGNAL SIGRTMIN+3
 
 # --- Step 11: Command Utama (PID 1) ---
-# Ini adalah bagian terpenting. Kita menjalankan /sbin/init
-# yang akan memulai systemd sebagai proses utama (PID 1).
-# Systemd kemudian akan mengambil alih dan menjalankan semua
-# service yang sudah di-enable (ssh, ngrok-ssh).
-CMD ["/sbin/init"]
+# PERBAIKAN: Ini adalah perintah WAJIB untuk Dockerfile.privileged di Railway
+CMD ["railway", "run", "--privileged", "--pid=host", "/sbin/init"]
