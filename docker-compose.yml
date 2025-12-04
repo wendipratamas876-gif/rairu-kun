@@ -1,5 +1,0 @@
-# Hapus file dari folder
-rm docker-compose.yml
-
-# Beritahu Git untuk menghapus file dari repository
-git rm docker-compose.yml
