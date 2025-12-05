@@ -14,13 +14,15 @@ RUN apt-get update && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 2. ngrok binary (link aktif per Des 2025)
-RUN wget -q https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-v3-stable-linux-amd64.zip \
-        -O /ngrok.zip && \
+# Perbaikan: Tambahkan penanganan error dan pastikan download berhasil
+RUN wget -q https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-v3-stable-linux-amd64.zip -O /ngrok.zip || \
+    (echo "Download failed, trying alternative source..." && \
+    wget -q https://dl.ngrok.com/ngrok-v3-stable-linux-amd64.zip -O /ngrok.zip) && \
     cd / && unzip -q ngrok.zip && rm ngrok.zip && chmod +x ngrok
 
 # 3. sshd setup
 RUN mkdir -p /run/sshd && \
-    echo "PermitRootLogin yes"  >> /etc/ssh/sshd_config && \
+    echo "PermitRootLogin yes" >> /etc/ssh/sshd_config && \
     echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && \
     echo "root:craxid" | chpasswd
 
