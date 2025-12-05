@@ -13,12 +13,15 @@ RUN apt-get update && \
         openssh-server wget unzip curl python3 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 2. ngrok binary (link aktif per Des 2025)
-# Perbaikan: Tambahkan penanganan error dan pastikan download berhasil
-RUN wget -q https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-v3-stable-linux-amd64.zip -O /ngrok.zip || \
-    (echo "Download failed, trying alternative source..." && \
-    wget -q https://dl.ngrok.com/ngrok-v3-stable-linux-amd64.zip -O /ngrok.zip) && \
-    cd / && unzip -q ngrok.zip && rm ngrok.zip && chmod +x ngrok
+# 2. ngrok binary - menggunakan metode instalasi resmi
+# Perbaikan: Menambahkan dependensi yang diperlukan dan menangani potensi error
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gnupg && \
+    curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | gpg --dearmor > /usr/share/keyrings/ngrok.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/ngrok.gpg] https://ngrok-agent.s3.amazonaws.com buster main" > /etc/apt/sources.list.d/ngrok.list && \
+    apt-get update && \
+    apt-get install -y ngrok && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 3. sshd setup
 RUN mkdir -p /run/sshd && \
@@ -30,7 +33,7 @@ RUN mkdir -p /run/sshd && \
 RUN printf '#!/bin/bash\n\
 set -e\n\
 touch /var/log/ngrok.log\n\
-/ngrok tcp --authtoken "${NGROK_TOKEN}" --region "${REGION}" 22 \
+ngrok tcp --authtoken "${NGROK_TOKEN}" --region "${REGION}" 22 \
            > /var/log/ngrok.log 2>&1 &\nsleep 5\n\
 URL=$(curl -s http://localhost:4040/api/tunnels | \
       python3 -c "import sys,json;d=json.load(sys.stdin);print(d[\"tunnels\"][0][\"public_url\"])" 2>/dev/null)\n\
