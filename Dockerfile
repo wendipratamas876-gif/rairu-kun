@@ -8,7 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NGROK_TOKEN=$NGROK_TOKEN \
     REGION=$REGION
 
-# 1. base + ssh + tools
+
 RUN apt-get update && apt-get install -y \
       openssh-server nano vim curl wget net-tools dnsutils iputils-ping \
       htop git python3 python3-pip unzip && \
