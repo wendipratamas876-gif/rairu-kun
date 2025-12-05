@@ -13,15 +13,14 @@ RUN apt-get update && \
         openssh-server wget unzip curl python3 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 2. ngrok binary - menggunakan metode instalasi resmi
-# Perbaikan: Menambahkan dependensi yang diperlukan dan menangani potensi error
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends gnupg && \
-    curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | gpg --dearmor > /usr/share/keyrings/ngrok.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/ngrok.gpg] https://ngrok-agent.s3.amazonaws.com buster main" > /etc/apt/sources.list.d/ngrok.list && \
-    apt-get update && \
-    apt-get install -y ngrok && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+# 2. ngrok binary - download langsung dari GitHub
+RUN mkdir -p /tmp/ngrok && \
+    cd /tmp/ngrok && \
+    wget -q https://github.com/nhoya/ngrokCLI/releases/latest/download/ngrok_linux_amd64.zip -O ngrok.zip && \
+    unzip ngrok.zip && \
+    mv ngrok /usr/local/bin/ && \
+    chmod +x /usr/local/bin/ngrok && \
+    rm -rf /tmp/ngrok
 
 # 3. sshd setup
 RUN mkdir -p /run/sshd && \
